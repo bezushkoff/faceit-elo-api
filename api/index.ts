@@ -1,46 +1,44 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import express from "express";
+import fetch from "node-fetch";
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
-  const { nick } = req.query;
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-  if (!nick || typeof nick !== 'string') {
-    return res.status(400).json({ error: 'No nickname' });
-  }
-
+app.get("/api", async (req, res) => {
   try {
-    // 1️⃣ Получаем игрока
+    const apiKey = process.env.FACEIT_KEY;
+    const nickname = process.env.FACEIT_NICK;
+
+    if (!apiKey || !nickname) {
+      return res.status(500).send("Missing FACEIT_KEY or FACEIT_NICK");
+    }
+
+    // 1️⃣ Получаем player_id по нику
     const playerRes = await fetch(
-      `https://open.faceit.com/data/v4/players?nickname=${nick}`,
+      `https://open.faceit.com/data/v4/players?nickname=${nickname}`,
       {
         headers: {
-          Authorization: `Bearer ${process.env.FACEIT_KEY}`,
+          Authorization: `Bearer ${apiKey}`,
         },
       }
     );
 
-    if (!playerRes.ok) {
-      return res.status(404).send('Player not found');
-    }
-
     const playerData = await playerRes.json();
     const playerId = playerData.player_id;
-    const cs = playerData.games?.cs2 || playerData.games?.csgo;
 
-    if (!cs) {
-      return res.status(404).send('CS game not found');
+    if (!playerId) {
+      return res.status(404).send("Player not found");
     }
 
-    const currentElo = cs.faceit_elo;
+    const currentElo =
+      playerData.games?.cs2?.faceit_elo || 0;
 
     // 2️⃣ Получаем последние матчи
     const matchesRes = await fetch(
       `https://open.faceit.com/data/v4/players/${playerId}/history?game=cs2&limit=20`,
       {
         headers: {
-          Authorization: `Bearer ${process.env.FACEIT_KEY}`,
+          Authorization: `Bearer ${apiKey}`,
         },
       }
     );
@@ -48,7 +46,7 @@ export default async function handler(
     const matchesData = await matchesRes.json();
     const matches = matchesData.items || [];
 
-    const todayDate = new Date().toISOString().split('T')[0];
+    const todayDate = new Date().toISOString().split("T")[0];
 
     let win = 0;
     let lose = 0;
@@ -57,18 +55,39 @@ export default async function handler(
     for (const match of matches) {
       const matchDate = new Date(match.finished_at * 1000)
         .toISOString()
-        .split('T')[0];
+        .split("T")[0];
 
       if (matchDate !== todayDate) continue;
 
-      if (match.stats?.result === '1') {
+      const statsRes = await fetch(
+        `https://open.faceit.com/data/v4/matches/${match.match_id}/stats`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        }
+      );
+
+      const statsData = await statsRes.json();
+      const teams = statsData.rounds?.[0]?.teams || [];
+      const players = teams.flatMap((team: any) => team.players);
+      const me = players.find(
+        (p: any) => p.player_id === playerId
+      );
+
+      if (!me) continue;
+
+      const result = me.player_stats?.Result;
+
+      if (result === "1") {
         win++;
       } else {
         lose++;
       }
 
-      const before = match.stats?.elo_before ?? 0;
-      const after = match.stats?.elo_after ?? 0;
+      const before = Number(me.player_stats?.Elo_Before || 0);
+      const after = Number(me.player_stats?.Elo_After || 0);
+
       eloDiff += after - before;
     }
 
@@ -80,6 +99,11 @@ export default async function handler(
     return res.status(200).send(formatted);
 
   } catch (error) {
-    return res.status(500).send('Server error');
+    console.error(error);
+    return res.status(500).send("Server error");
   }
-}
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
