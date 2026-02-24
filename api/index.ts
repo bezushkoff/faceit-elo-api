@@ -4,73 +4,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { nick } = req.query;
 
   if (!nick || typeof nick !== 'string') {
-    return res.status(400).send('No nickname provided');
+    return res.status(400).send('No nickname');
   }
 
   const apiKey = process.env.FACEIT_KEY;
-  if (!apiKey) return res.status(500).send('FACEIT_KEY not set');
+  if (!apiKey) return res.status(500).send('No FACEIT_KEY');
 
   try {
-    // 1️⃣ Получаем данные игрока
-    const playerRes = await fetch(`https://open.faceit.com/data/v4/players?nickname=${nick}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    // Получаем игрока
+    const playerRes = await fetch(
+      `https://open.faceit.com/data/v4/players?nickname=${nick}`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
+
     if (!playerRes.ok) return res.status(404).send('Player not found');
 
-    const playerData: any = await playerRes.json();
-    const cs = playerData.games?.cs2 || playerData.games?.csgo;
-    if (!cs) return res.status(404).send('CS game not found');
+    const player = await playerRes.json();
+    const playerId = player.player_id;
+
+    const cs = player.games?.cs2 || player.games?.csgo;
+    if (!cs) return res.status(404).send('CS not found');
 
     const currentElo = cs.faceit_elo;
 
-    // 2️⃣ Получаем историю последних матчей для разницы Elo
-    const playerId = playerData.player_id;
-    const historyRes = await fetch(`https://open.faceit.com/data/v4/players/${playerId}/history?game=cs2&limit=5`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    const historyData: any = await historyRes.json();
-    const matches: any[] = historyData.items || [];
+    // Берём последний матч
+    const historyRes = await fetch(
+      `https://open.faceit.com/data/v4/players/${playerId}/history?game=cs2&limit=1`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
 
-    let win = 0, lose = 0, eloDiff = 0;
-    const today = new Date().toISOString().split('T')[0];
+    const history = await historyRes.json();
+    const lastMatch = history.items?.[0];
 
-    for (const match of matches) {
-      if (!match.finished_at || !match.match_id) continue;
-      const matchDate = new Date(match.finished_at * 1000).toISOString().split('T')[0];
-      if (matchDate !== today) continue;
-
-      try {
-        const statsRes = await fetch(`https://open.faceit.com/data/v4/matches/${match.match_id}/stats`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        if (!statsRes.ok) continue;
-
-        const statsData: any = await statsRes.json();
-        const teams: any[] = statsData.teams || [];
-        const players: any[] = teams.flatMap(t => t.players || []);
-        const me: any = players.find(p => p.player_id === playerId);
-        if (!me || !me.player_stats) continue;
-
-        const result = me.player_stats.Result;
-        const before = Number(me.player_stats.Elo_Before || 0);
-        const after = Number(me.player_stats.Elo_After || 0);
-
-        if (result === '1') win++;
-        else if (result === '0') lose++;
-
-        eloDiff += after - before;
-      } catch {
-        continue;
-      }
+    if (!lastMatch) {
+      return res.send(`Elo: ${currentElo}`);
     }
 
-    const eloDiffFormatted = eloDiff > 0 ? `+${eloDiff}` : `${eloDiff}`;
-    const output = `Elo: ${currentElo} | Today → Win: ${win} Lose: ${lose} Elo: ${eloDiffFormatted}`;
+    // Получаем stats последнего матча
+    const statsRes = await fetch(
+      `https://open.faceit.com/data/v4/matches/${lastMatch.match_id}/stats`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
 
-    return res.status(200).send(output);
+    if (!statsRes.ok) {
+      return res.send(`Elo: ${currentElo}`);
+    }
 
-  } catch (err) {
-    console.error(err);
-    return res.status(500).send('Server error');
+    const stats = await statsRes.json();
+    const teams = stats.teams || [];
+    const players = teams.flatMap((t: any) => t.players || []);
+    const me = players.find((p: any) => p.player_id === playerId);
+
+    if (!me || !me.player_stats) {
+      return res.send(`Elo: ${currentElo}`);
+    }
+
+    const before = Number(me.player_stats.Elo_Before || 0);
+    const after = Number(me.player_stats.Elo_After || 0);
+    const result = me.player_stats.Result;
+
+    const diff = after - before;
+    const diffFormatted = diff > 0 ? `+${diff}` : `${diff}`;
+    const winLose = result === '1' ? 'Win' : 'Lose';
+
+    return res.send(
+      `Elo: ${currentElo} | Last → ${winLose} ${diffFormatted}`
+    );
+
+  } catch (e) {
+    console.error(e);
+    return res.status(500).send('Error');
   }
 }
