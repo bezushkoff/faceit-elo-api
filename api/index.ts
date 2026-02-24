@@ -1,10 +1,10 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get("/api", async (req, res) => {
+app.get("/api", async (req: Request, res: Response) => {
   try {
     const apiKey = process.env.FACEIT_KEY;
     const nickname = process.env.FACEIT_NICK;
@@ -13,19 +13,19 @@ app.get("/api", async (req, res) => {
       return res.status(500).send("Missing FACEIT_KEY or FACEIT_NICK");
     }
 
-    // Получаем player_id и текущий Elo
+    // Получаем данные игрока
     const playerRes = await fetch(
       `https://open.faceit.com/data/v4/players?nickname=${nickname}`,
       { headers: { Authorization: `Bearer ${apiKey}` } }
     );
 
-    const playerData = await playerRes.json();
-    const playerId = playerData.player_id;
-    const currentElo = playerData.games?.cs2?.faceit_elo || 0;
+    if (!playerRes.ok) return res.status(404).send("Player not found");
 
-    if (!playerId) {
-      return res.status(404).send("Player not found");
-    }
+    const playerData: any = await playerRes.json();
+    const playerId: string = playerData.player_id;
+    const currentElo: number = playerData.games?.cs2?.faceit_elo || 0;
+
+    if (!playerId) return res.status(404).send("Player not found");
 
     // Получаем последние 20 матчей
     const matchesRes = await fetch(
@@ -33,10 +33,11 @@ app.get("/api", async (req, res) => {
       { headers: { Authorization: `Bearer ${apiKey}` } }
     );
 
-    const matchesData = await matchesRes.json();
-    const matches = matchesData.items || [];
+    const matchesData: any = await matchesRes.json();
+    const matches: any[] = matchesData.items || [];
 
     const todayDate = new Date().toISOString().split("T")[0];
+
     let win = 0;
     let lose = 0;
     let eloDiff = 0;
@@ -58,11 +59,10 @@ app.get("/api", async (req, res) => {
 
         if (!statsRes.ok) continue;
 
-        const statsData = await statsRes.json();
-
-        const teams = statsData.teams || [];
-        const players = teams.flatMap((team: any) => team.players || []);
-        const me = players.find((p: any) => p.player_id === playerId);
+        const statsData: any = await statsRes.json();
+        const teams: any[] = statsData.teams || [];
+        const players: any[] = teams.flatMap(team => team.players || []);
+        const me: any = players.find(p => p.player_id === playerId);
         if (!me) continue;
 
         const result = me.player_stats?.Result;
